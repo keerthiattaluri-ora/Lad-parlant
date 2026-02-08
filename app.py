@@ -1,24 +1,40 @@
 import os
 import json
 import requests
+import oci
+
 from fastapi import FastAPI, Request, Query
+from fastapi.responses import PlainTextResponse
 from openai import OpenAI
 from dotenv import load_dotenv
 
+# ==================================================
+# ENV + CONFIG
+# ==================================================
 load_dotenv()
 
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
 ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-client = OpenAI(api_key=OPENAI_API_KEY)
-app = FastAPI()
+# ==================================================
+# FASTAPI APP
+# ==================================================
+app = FastAPI(title="WhatsApp + Parlant + OCI GPT-4.1")
 
+# ==================================================
+# PARLANT SYSTEM PROMPT
+# ==================================================
 SYSTEM_PROMPT = """
-You are Parlant, a WhatsApp assistant.
-Always reply in English.
-Return ONLY valid JSON:
+You are Parlant, a WhatsApp conversation intelligence engine.
+
+Rules:
+- Always reply in English
+- Be concise, polite, and helpful
+- Ask follow-up questions if needed
+- Decide what should happen next
+
+Return ONLY valid JSON in this exact format:
 
 {
   "reply": string,
@@ -29,43 +45,84 @@ Return ONLY valid JSON:
 }
 """
 
+# ==================================================
+# OCI OPENAI-COMPATIBLE CLIENT
+# ==================================================
+def create_oci_openai_client():
+    """
+    Uses OCI Instance / Resource / API Key principals
+    OCI behaves like OpenAI (OpenAI-compatible endpoint)
+    """
+    signer = oci.auth.signers.InstancePrincipalsSecurityTokenSigner()
+
+    return OpenAI(
+        base_url="https://inference.generativeai.us-ashburn-1.oci.oraclecloud.com",
+        api_key="oci",  # dummy value required by SDK
+        http_client_kwargs={
+            "signer": signer
+        }
+    )
+
+oci_client = create_oci_openai_client()
+
+# ==================================================
+# SEND INITIAL WHATSAPP TEMPLATE
+# ==================================================
 def send_initial_template(phone: str):
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
+
     payload = {
         "messaging_product": "whatsapp",
         "to": phone,
         "type": "template",
         "template": {
-            "name": "lad_telephony",
+            "name": "lad_telephony",  # must be approved
             "language": {"code": "en"}
         }
     }
+
     headers = {
         "Authorization": f"Bearer {ACCESS_TOKEN}",
         "Content-Type": "application/json"
     }
+
     resp = requests.post(url, headers=headers, json=payload)
-    print("WHATSAPP TEMPLATE RESPONSE STATUS:", resp.status_code)
-    print("WHATSAPP TEMPLATE RESPONSE BODY:", resp.text)
+    print("WHATSAPP TEMPLATE STATUS:", resp.status_code)
+    print("WHATSAPP TEMPLATE BODY:", resp.text)
 
-
+# ==================================================
+# START CONVERSATION
+# ==================================================
 @app.post("/start")
-def start(phone: str = Query(...)):
+def start(phone: str = Query(..., description="Phone number with country code")):
     send_initial_template(phone)
     return {"status": "template_sent"}
 
+# ==================================================
+# WEBHOOK VERIFICATION (META)
+# ==================================================
 @app.get("/")
 def verify(request: Request):
-    q = request.query_params
-    if q.get("hub.mode") == "subscribe" and q.get("hub.verify_token") == VERIFY_TOKEN:
-        return int(q.get("hub.challenge"))
-    return {"error": "verification failed"}
+    params = request.query_params
 
+    mode = params.get("hub.mode")
+    token = params.get("hub.verify_token")
+    challenge = params.get("hub.challenge")
+
+    if mode == "subscribe" and token == VERIFY_TOKEN:
+        return PlainTextResponse(content=challenge, status_code=200)
+
+    return PlainTextResponse(content="Verification failed", status_code=403)
+
+# ==================================================
+# RECEIVE WHATSAPP MESSAGES
+# ==================================================
 @app.post("/")
 async def webhook(request: Request):
     payload = await request.json()
     value = payload["entry"][0]["changes"][0]["value"]
 
+    # Ignore delivery / read receipts
     if "messages" not in value:
         return {"status": "ignored"}
 
@@ -73,30 +130,68 @@ async def webhook(request: Request):
     from_number = msg["from"]
     text = msg["text"]["body"]
 
-    response = chat_parlant(from_number, text)
-    send_text(from_number, response["reply"])
+    session_id = f"whatsapp:{from_number}"
+
+    parlant_response = chat_parlant(session_id, text)
+
+    send_text(from_number, parlant_response["reply"])
+
     return {"status": "ok"}
 
-def chat_parlant(session: str, text: str):
-    completion = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": f"{session}: {text}"}
-        ]
-    )
-    return json.loads(completion.choices[0].message.content)
+# ==================================================
+# PARLANT ENGINE (OCI GPT-4.1)
+# ==================================================
+def chat_parlant(session_id: str, user_text: str):
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": f"""
+Session ID: {session_id}
+User message: {user_text}
+"""
+        }
+    ]
 
-def send_text(to, text):
+    try:
+        completion = oci_client.chat.completions.create(
+            model="openai.gpt-4.1",
+            messages=messages,
+            temperature=0.2
+        )
+
+        raw = completion.choices[0].message.content.strip()
+        return json.loads(raw)
+
+    except Exception as e:
+        print("OCI LLM ERROR:", str(e))
+        # SAFETY FALLBACK — NEVER FAIL WEBHOOK
+        return {
+            "reply": "Thanks for your message. A support agent will follow up shortly.",
+            "intent": "fallback",
+            "sentiment": "neutral",
+            "confidence": 0.1,
+            "next_action": "human_handoff"
+        }
+
+# ==================================================
+# SEND NORMAL WHATSAPP TEXT
+# ==================================================
+def send_text(to: str, text: str):
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
+
     payload = {
         "messaging_product": "whatsapp",
         "to": to,
         "type": "text",
         "text": {"body": text}
     }
+
     headers = {
         "Authorization": f"Bearer {ACCESS_TOKEN}",
         "Content-Type": "application/json"
     }
-    requests.post(url, headers=headers, json=payload)
+
+    resp = requests.post(url, headers=headers, json=payload)
+    print("WHATSAPP TEXT STATUS:", resp.status_code)
+    print("WHATSAPP TEXT BODY:", resp.text)
