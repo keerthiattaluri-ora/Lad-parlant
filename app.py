@@ -112,7 +112,6 @@ async def webhook(request: Request):
     payload = await request.json()
     value = payload["entry"][0]["changes"][0]["value"]
 
-    # Ignore delivery/read receipts
     if "messages" not in value:
         return {"status": "ignored"}
 
@@ -124,9 +123,18 @@ async def webhook(request: Request):
 
     parlant_response = chat_parlant(session_id, text)
 
+    print({
+        "parlant_session_id": parlant_response["session_id"],
+        "from": from_number,
+        "user_text": text,
+        "intent": parlant_response["intent"],
+        "confidence": parlant_response["confidence"]
+    })
+
     send_text(from_number, parlant_response["reply"])
 
     return {"status": "ok"}
+
 
 # ==================================================
 # PARLANT ENGINE (GROQ)
@@ -145,23 +153,27 @@ User message: {user_text}
 
     try:
         completion = groq_client.chat.completions.create(
-            model="llama-3.1-70b-versatile",
+            model="llama3-8b-8192",
             messages=messages,
             temperature=0.2
         )
 
         raw = completion.choices[0].message.content.strip()
-        return json.loads(raw)
+        parsed = json.loads(raw)
+        parsed["session_id"] = session_id
+        return parsed
 
     except Exception as e:
         print("GROQ ERROR:", str(e))
         return {
+            "session_id": session_id,
             "reply": "Thanks for your message. A support agent will follow up shortly.",
             "intent": "fallback",
             "sentiment": "neutral",
             "confidence": 0.1,
             "next_action": "human_handoff"
         }
+
 
 # ==================================================
 # SEND NORMAL WHATSAPP TEXT
