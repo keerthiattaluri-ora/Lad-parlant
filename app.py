@@ -145,7 +145,7 @@ User message: {user_text}
 
     try:
         completion = groq_client.chat.completions.create(
-            model="llama3-70b-8192",
+            model="llama-3.1-70b-versatile",
             messages=messages,
             temperature=0.2
         )
@@ -155,7 +155,6 @@ User message: {user_text}
 
     except Exception as e:
         print("GROQ ERROR:", str(e))
-        # Safety fallback — never fail WhatsApp webhook
         return {
             "reply": "Thanks for your message. A support agent will follow up shortly.",
             "intent": "fallback",
