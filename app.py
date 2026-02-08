@@ -15,20 +15,20 @@ load_dotenv()
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
 ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 # ==================================================
-# OLLAMA CLIENT (OPENAI-COMPATIBLE)
+# GROQ CLIENT (OPENAI-COMPATIBLE)
 # ==================================================
-# Change base_url if Ollama runs on another machine
-ollama_client = OpenAI(
-    base_url="http://localhost:11434/v1",
-    api_key="ollama"  # dummy value, required by SDK
+groq_client = OpenAI(
+    api_key=GROQ_API_KEY,
+    base_url="https://api.groq.com/openai/v1"
 )
 
 # ==================================================
 # FASTAPI APP
 # ==================================================
-app = FastAPI(title="WhatsApp + Parlant + Ollama")
+app = FastAPI(title="WhatsApp + Parlant + Groq")
 
 # ==================================================
 # PARLANT SYSTEM PROMPT
@@ -129,7 +129,7 @@ async def webhook(request: Request):
     return {"status": "ok"}
 
 # ==================================================
-# PARLANT ENGINE (OLLAMA)
+# PARLANT ENGINE (GROQ)
 # ==================================================
 def chat_parlant(session_id: str, user_text: str):
     messages = [
@@ -144,8 +144,8 @@ User message: {user_text}
     ]
 
     try:
-        completion = ollama_client.chat.completions.create(
-            model="llama3",
+        completion = groq_client.chat.completions.create(
+            model="llama3-70b-8192",
             messages=messages,
             temperature=0.2
         )
@@ -154,7 +154,7 @@ User message: {user_text}
         return json.loads(raw)
 
     except Exception as e:
-        print("OLLAMA ERROR:", str(e))
+        print("GROQ ERROR:", str(e))
         # Safety fallback — never fail WhatsApp webhook
         return {
             "reply": "Thanks for your message. A support agent will follow up shortly.",
