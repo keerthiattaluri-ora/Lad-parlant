@@ -1,7 +1,6 @@
 import os
 import json
 import requests
-import oci
 
 from fastapi import FastAPI, Request, Query
 from fastapi.responses import PlainTextResponse
@@ -18,9 +17,18 @@ ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 
 # ==================================================
+# OLLAMA CLIENT (OPENAI-COMPATIBLE)
+# ==================================================
+# Change base_url if Ollama runs on another machine
+ollama_client = OpenAI(
+    base_url="http://localhost:11434/v1",
+    api_key="ollama"  # dummy value, required by SDK
+)
+
+# ==================================================
 # FASTAPI APP
 # ==================================================
-app = FastAPI(title="WhatsApp + Parlant + OCI GPT-4.1")
+app = FastAPI(title="WhatsApp + Parlant + Ollama")
 
 # ==================================================
 # PARLANT SYSTEM PROMPT
@@ -46,26 +54,6 @@ Return ONLY valid JSON in this exact format:
 """
 
 # ==================================================
-# OCI OPENAI-COMPATIBLE CLIENT
-# ==================================================
-def create_oci_openai_client():
-    """
-    Uses OCI Instance / Resource / API Key principals
-    OCI behaves like OpenAI (OpenAI-compatible endpoint)
-    """
-    signer = oci.auth.signers.InstancePrincipalsSecurityTokenSigner()
-
-    return OpenAI(
-        base_url="https://inference.generativeai.us-ashburn-1.oci.oraclecloud.com",
-        api_key="oci",  # dummy value required by SDK
-        http_client_kwargs={
-            "signer": signer
-        }
-    )
-
-oci_client = create_oci_openai_client()
-
-# ==================================================
 # SEND INITIAL WHATSAPP TEMPLATE
 # ==================================================
 def send_initial_template(phone: str):
@@ -76,7 +64,7 @@ def send_initial_template(phone: str):
         "to": phone,
         "type": "template",
         "template": {
-            "name": "lad_telephony",  # must be approved
+            "name": "lad_telephony",
             "language": {"code": "en"}
         }
     }
@@ -87,8 +75,8 @@ def send_initial_template(phone: str):
     }
 
     resp = requests.post(url, headers=headers, json=payload)
-    print("WHATSAPP TEMPLATE STATUS:", resp.status_code)
-    print("WHATSAPP TEMPLATE BODY:", resp.text)
+    print("TEMPLATE STATUS:", resp.status_code)
+    print("TEMPLATE BODY:", resp.text)
 
 # ==================================================
 # START CONVERSATION
@@ -105,12 +93,14 @@ def start(phone: str = Query(..., description="Phone number with country code"))
 def verify(request: Request):
     params = request.query_params
 
-    mode = params.get("hub.mode")
-    token = params.get("hub.verify_token")
-    challenge = params.get("hub.challenge")
-
-    if mode == "subscribe" and token == VERIFY_TOKEN:
-        return PlainTextResponse(content=challenge, status_code=200)
+    if (
+        params.get("hub.mode") == "subscribe"
+        and params.get("hub.verify_token") == VERIFY_TOKEN
+    ):
+        return PlainTextResponse(
+            content=params.get("hub.challenge"),
+            status_code=200
+        )
 
     return PlainTextResponse(content="Verification failed", status_code=403)
 
@@ -122,7 +112,7 @@ async def webhook(request: Request):
     payload = await request.json()
     value = payload["entry"][0]["changes"][0]["value"]
 
-    # Ignore delivery / read receipts
+    # Ignore delivery/read receipts
     if "messages" not in value:
         return {"status": "ignored"}
 
@@ -139,7 +129,7 @@ async def webhook(request: Request):
     return {"status": "ok"}
 
 # ==================================================
-# PARLANT ENGINE (OCI GPT-4.1)
+# PARLANT ENGINE (OLLAMA)
 # ==================================================
 def chat_parlant(session_id: str, user_text: str):
     messages = [
@@ -154,8 +144,8 @@ User message: {user_text}
     ]
 
     try:
-        completion = oci_client.chat.completions.create(
-            model="openai.gpt-4.1",
+        completion = ollama_client.chat.completions.create(
+            model="llama3",
             messages=messages,
             temperature=0.2
         )
@@ -164,8 +154,8 @@ User message: {user_text}
         return json.loads(raw)
 
     except Exception as e:
-        print("OCI LLM ERROR:", str(e))
-        # SAFETY FALLBACK — NEVER FAIL WEBHOOK
+        print("OLLAMA ERROR:", str(e))
+        # Safety fallback — never fail WhatsApp webhook
         return {
             "reply": "Thanks for your message. A support agent will follow up shortly.",
             "intent": "fallback",
@@ -193,5 +183,5 @@ def send_text(to: str, text: str):
     }
 
     resp = requests.post(url, headers=headers, json=payload)
-    print("WHATSAPP TEXT STATUS:", resp.status_code)
-    print("WHATSAPP TEXT BODY:", resp.text)
+    print("TEXT STATUS:", resp.status_code)
+    print("TEXT BODY:", resp.text)
