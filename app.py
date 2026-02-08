@@ -44,7 +44,10 @@ def send_initial_template(phone: str):
         "Authorization": f"Bearer {ACCESS_TOKEN}",
         "Content-Type": "application/json"
     }
-    requests.post(url, headers=headers, json=payload)
+    resp = requests.post(url, headers=headers, json=payload)
+    print("WHATSAPP TEMPLATE RESPONSE STATUS:", resp.status_code)
+    print("WHATSAPP TEMPLATE RESPONSE BODY:", resp.text)
+
 
 @app.post("/start")
 def start(phone: str = Query(...)):
